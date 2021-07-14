@@ -3,4 +3,13 @@
   <ItemGroup>
     <ClCompile Include="byeintegrity.c" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="ByeIntegrity8.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\x64\Release\PcaPayload.dll" />
+  </ItemGroup>
 </Project>
