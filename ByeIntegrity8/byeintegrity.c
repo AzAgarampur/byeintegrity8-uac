@@ -164,7 +164,7 @@ int wmain(
 	IRegisteredTask* wdiTask = NULL;
 	TASK_STATE taskState;
 	HMODULE pcaModule = NULL;
-	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme
+	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme; 4703 for some reason...
 	DWORD curDirSize;
 	PWSTR curDir;
 	LSTATUS status;
@@ -322,10 +322,8 @@ int wmain(
 	}
 
 	if (usesPca)
-#pragma warning(disable:4703)
 		status = (LSTATUS)PcaMonitorProcess(processInfo.hProcess, 1, argv[0], cmdLine,
 			curDir, PCA_MONITOR_PROCESS_NORMAL);
-#pragma warning(default:4703)
 	else
 		status = 0;
 	HeapFree(GetProcessHeap(), 0, curDir);
