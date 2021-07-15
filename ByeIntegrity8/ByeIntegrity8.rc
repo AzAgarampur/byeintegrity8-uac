@@ -50,7 +50,7 @@ END
 // PAYLOAD
 //
 
-IDR_PAYLOAD1            PAYLOAD                 "C:\\Users\\Arush\\source\\repos\\byeintegrity8-uac\\x64\\Release\\PcaPayload.dll"
+IDR_PAYLOAD1            PAYLOAD                 "..\\x64\\Release\\PcaPayload.dll"
 
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////

