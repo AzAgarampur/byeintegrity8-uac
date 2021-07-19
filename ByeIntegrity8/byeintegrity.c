@@ -354,9 +354,33 @@ end:
 		}
 	}
 	else {
-		SC_HANDLE scHandle;
+		BOOLEAN failed = TRUE;
+		SC_HANDLE scHandle, hService = NULL;
 
 		scHandle = OpenSCManagerW(NULL, SERVICES_ACTIVE_DATABASEW, SC_MANAGER_CONNECT);
+		if (!scHandle) {
+			wprintf(L"OpenSCManagerW() failed. Error: %lu\n", GetLastError());
+			goto cleanup;
+		}
+		hService = OpenServiceW(scHandle, L"PcaSvc", SERVICE_START);
+		if (!hService) {
+			wprintf(L"OpenServiceW() failed. Error: %lu\n", GetLastError());
+			goto cleanup;
+		}
+		if (!StartServiceW(hService, 0, NULL)) {
+			wprintf(L"StartServiceW() failed. Error: %lu\n", GetLastError());
+			goto cleanup;
+		}
+
+		failed = FALSE;
+
+cleanup:
+		if (hService)
+			CloseServiceHandle(hService);
+		if (scHandle)
+			CloseServiceHandle(scHandle);
+		if (failed)
+			goto eof;
 	}
 
 	exeNameSize = MAX_PATH;
