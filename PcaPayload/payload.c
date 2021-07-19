@@ -9,6 +9,8 @@ __declspec(dllexport) HRESULT WdiHandleInstance(
 	UNREFERENCED_PARAMETER(instanceData);
 	UNREFERENCED_PARAMETER(unused1);
 
+	/* Called to handle the diagnostic instance in the queue (program compatibility assistance in our case),
+	* does not seem to matter if return code is success or error (maybe it does for Wdi logging.) */
 	return S_OK;
 }
 

