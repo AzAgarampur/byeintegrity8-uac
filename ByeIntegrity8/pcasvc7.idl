@@ -2,7 +2,7 @@
 	uuid(0767a036-0d22-48aa-ba69-b619480f38cb),
 	version(1.0),
 ]
-interface PcaService
+interface PcaService7
 {
 	long RAiNotifyUserCallbackExceptionProcess(
 		handle_t bindingHandle,

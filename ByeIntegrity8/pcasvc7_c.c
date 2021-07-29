@@ -7,6 +7,9 @@
 * NUMBER IN THIS GENERATED FILE IN ORDER FOR THE CALL TO WORK
 */
 
+/* this ALWAYS GENERATED file contains the RPC client stubs */
+
+
  /* File created by MIDL compiler version 8.01.0622 */
 /* at Mon Jan 18 19:14:07 2038
  */
@@ -72,12 +75,12 @@ extern const pcasvc7_MIDL_EXPR_FORMAT_STRING pcasvc7__MIDL_ExprFormatString;
 #define GENERIC_BINDING_TABLE_SIZE   0            
 
 
-/* Standard interface: PcaService, ver. 1.0,
+/* Standard interface: PcaService7, ver. 1.0,
    GUID={0x0767a036,0x0d22,0x48aa,{0xba,0x69,0xb6,0x19,0x48,0x0f,0x38,0xcb}} */
 
 
 
-static const RPC_CLIENT_INTERFACE PcaService___RpcClientInterface =
+static const RPC_CLIENT_INTERFACE PcaService7___RpcClientInterface =
     {
     sizeof(RPC_CLIENT_INTERFACE),
     {{0x0767a036,0x0d22,0x48aa,{0xba,0x69,0xb6,0x19,0x48,0x0f,0x38,0xcb}},{1,0}},
@@ -89,24 +92,24 @@ static const RPC_CLIENT_INTERFACE PcaService___RpcClientInterface =
     0,
     0x00000000
     };
-RPC_IF_HANDLE PcaService_v1_0_c_ifspec = (RPC_IF_HANDLE)& PcaService___RpcClientInterface;
+RPC_IF_HANDLE PcaService7_v1_0_c_ifspec = (RPC_IF_HANDLE)& PcaService7___RpcClientInterface;
 
-extern const MIDL_STUB_DESC PcaService_StubDesc;
+extern const MIDL_STUB_DESC PcaService7_StubDesc;
 
-static RPC_BINDING_HANDLE PcaService__MIDL_AutoBindHandle;
+static RPC_BINDING_HANDLE PcaService7__MIDL_AutoBindHandle;
 
 
 long RAiNotifyUserCallbackExceptionProcess( 
-    handle_t bindingHandle, // binding handle
-    /* [string][in] */ wchar_t *exePathName, // full exe path name
-    /* [in] */ long unknown0, // always 1
-    /* [in] */ long processId) // process ID to use
+    handle_t bindingHandle,
+    /* [string][in] */ wchar_t *exePathName,
+    /* [in] */ long unknown0,
+    /* [in] */ long processId)
 {
 
     CLIENT_CALL_RETURN _RetVal;
 
     _RetVal = NdrClientCall2(
-                  ( PMIDL_STUB_DESC  )&PcaService_StubDesc,
+                  ( PMIDL_STUB_DESC  )&PcaService7_StubDesc,
                   (PFORMAT_STRING) &pcasvc7__MIDL_ProcFormatString.Format[0],
                   bindingHandle,
                   exePathName,
@@ -193,18 +196,18 @@ static const pcasvc7_MIDL_TYPE_FORMAT_STRING pcasvc7__MIDL_TypeFormatString =
         }
     };
 
-static const unsigned short PcaService_FormatStringOffsetTable[] =
+static const unsigned short PcaService7_FormatStringOffsetTable[] =
     {
     0
     };
 
 
-static const MIDL_STUB_DESC PcaService_StubDesc = 
+static const MIDL_STUB_DESC PcaService7_StubDesc = 
     {
-    (void *)& PcaService___RpcClientInterface,
+    (void *)& PcaService7___RpcClientInterface,
     MIDL_user_allocate,
     MIDL_user_free,
-    &PcaService__MIDL_AutoBindHandle,
+    &PcaService7__MIDL_AutoBindHandle,
     0,
     0,
     0,

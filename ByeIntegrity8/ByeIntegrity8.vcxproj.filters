@@ -3,10 +3,12 @@
   <ItemGroup>
     <ClCompile Include="byeintegrity.c" />
     <ClCompile Include="pcasvc7_c.c" />
+    <ClCompile Include="pcasvc_c.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="resource.h" />
     <ClInclude Include="pcasvc7.h" />
+    <ClInclude Include="pcasvc.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="ByeIntegrity8.rc" />
@@ -19,10 +21,18 @@
     <None Include="pcasvc7.idl">
       <Filter>IDL</Filter>
     </None>
+    <None Include="pcasvc.acf">
+      <Filter>IDL</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="IDL">
       <UniqueIdentifier>{49e5c2b1-4d1b-4cdf-b186-b1e86110bf4a}</UniqueIdentifier>
     </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <Midl Include="pcasvc.idl">
+      <Filter>IDL</Filter>
+    </Midl>
   </ItemGroup>
 </Project>
