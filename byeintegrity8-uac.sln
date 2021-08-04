@@ -4,6 +4,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 VisualStudioVersion = 16.0.31424.327
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ByeIntegrity8", "ByeIntegrity8\ByeIntegrity8.vcxproj", "{F04ACB28-CA8B-40A8-9D8B-3D2550BCE0CD}"
+	ProjectSection(ProjectDependencies) = postProject
+		{2702AD93-DC30-427F-AA64-DEB4CC2EA0A0} = {2702AD93-DC30-427F-AA64-DEB4CC2EA0A0}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PcaPayload", "PcaPayload\PcaPayload.vcxproj", "{2702AD93-DC30-427F-AA64-DEB4CC2EA0A0}"
 EndProject

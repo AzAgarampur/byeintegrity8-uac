@@ -62,7 +62,7 @@ BOOL WINAPI DllMain(
 		PWSTR cmdPath = NULL;
 		STARTUPINFOW si;
 		PROCESS_INFORMATION pi;
-		HANDLE hSharedMemory;
+		HANDLE hSharedMemory, hEvent = NULL;
 		WCHAR stopCmd[2];
 
 		hSharedMemory = OpenFileMappingW(FILE_MAP_WRITE, FALSE, L"ByeIntegrity8");
@@ -71,6 +71,10 @@ BOOL WINAPI DllMain(
 
 		exeName = MapViewOfFile(hSharedMemory, FILE_MAP_WRITE, 0, 0, 0);
 		if (!exeName)
+			goto eof;
+
+		hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"ByeIntegrity8Loaded");
+		if (!hEvent)
 			goto eof;
 
 		hr = SHGetKnownFolderPath(&FOLDERID_Windows, 0, NULL, &winDir);
@@ -96,20 +100,22 @@ BOOL WINAPI DllMain(
 		CloseHandle(pi.hProcess);
 		CloseHandle(pi.hThread);
 
-		stopCmd[0] = L'S';
+		stopCmd[0] = L'2';
 		stopCmd[1] = L'\0';
-		if (CreateProcessW((LPCWSTR)(exeName + (sizeof(BOOLEAN) * 2)), stopCmd, NULL, NULL, FALSE,
-				CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+		if (CreateProcessW((LPCWSTR)exeName, stopCmd, NULL, NULL, FALSE,
+			CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
 			CloseHandle(pi.hProcess);
 			CloseHandle(pi.hThread);
 		}
 
-		*(PBOOLEAN)exeName = TRUE;
+		SetEvent(hEvent);
 		exitCode = TRUE;
 
 eof:
 		if (hSharedMemory)
 			CloseHandle(hSharedMemory);
+		if (hEvent)
+			CloseHandle(hEvent);
 		if (exeName)
 			UnmapViewOfFile(exeName);
 		if (winDir)

